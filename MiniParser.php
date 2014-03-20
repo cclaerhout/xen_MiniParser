@@ -629,7 +629,10 @@ class YourDirectory_YourClass_MiniParser
 		}
 		else
 		{
-			$text = nl2br($text);
+			if($this->_nl2br)
+			{
+				$text = nl2br($text);
+			}
 		}
 		
 		if(!$this->_mergeAdjacentTextNodes)
