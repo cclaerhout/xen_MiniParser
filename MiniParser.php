@@ -1,14 +1,14 @@
 <?php
-/* Mini Parser BbCodes to Html - v1.1 by Sedo - CC by 3.0*/
+/* Mini Parser BbCodes to Html - v1.2 by Sedo - CC by 3.0*/
 class YourDirectory_YourClass_MiniParser
 {
 	/**
 	 * Parser configuration
 	 */
 	protected $_parserOpeningCharacter = '{';
-	protected $_parserOpeningCharacterRegex;
+	protected $_parserOpeningCharacterRegex = '{';
 	protected $_parserClosingCharacter = '}';
-	protected $_parserClosingCharacterRegex;
+	protected $_parserClosingCharacterRegex = '}';
 	protected $_parserDepthLimit = 50;
 	protected $_htmlspecialcharsForContent = true;
 	protected $_htmlspecialcharsForOptions = true;
@@ -196,11 +196,14 @@ class YourDirectory_YourClass_MiniParser
 
 		$this->_text = $text;
 		$this->_matches = $this->_getMatchesFromSplitRegex($text);
+		reset($this->_matches);
 		$this->_tree = $this->_buildTree();
 		return;
 		
 		$output = $this->render();
 		Zend_Debug::dump($output);
+		Zend_Debug::dump($this->_tree);
+		Zend_Debug::dump($this->getBasicTree());
 	}
 
 	/**
@@ -229,8 +232,9 @@ class YourDirectory_YourClass_MiniParser
 		$nodes = array();
 		$i = 0;			
 
-		while (($value = array_shift($this->_matches)) !== NULL)
+		while (($value = current($this->_matches)) !== FALSE)
 		{
+			next($this->_matches);
 			switch ($i++ % 3)
 			{
 				case 0:
@@ -251,7 +255,8 @@ class YourDirectory_YourClass_MiniParser
 					{
 						$tagName = strtolower($value);
 						
-						$fallBack = $this->_parserOpeningCharacter.'/'.$tagName.$this->_parserClosingCharacter;
+						//The fallback must use the value and not the tagName to output valid datas from mal formed closing tag (ie: [/quote)
+						$fallBack = $this->_parserOpeningCharacter.'/'.$value.$this->_parserClosingCharacter;
 
 						/*Parser Checker*/
 						if(!$this->_parseTagChecker($tagName))
@@ -266,7 +271,7 @@ class YourDirectory_YourClass_MiniParser
 						/*Unexpected Closing Tag Management*/
 						$expected = array_pop($this->_openedTagsStack);
 						$id = $expected['tagId'];
-		
+						
 						if ($tagName != $expected['tagName'])
 						{
 							//TO CHECK: if the nodes must be return to still create a new branch
@@ -328,7 +333,7 @@ class YourDirectory_YourClass_MiniParser
 						$openingFallBack = $this->_parserOpeningCharacter.$value.$this->_parserClosingCharacter;
 						$closingFallBack = $this->_parserOpeningCharacter.'/'.$tagName.$this->_parserClosingCharacter;
 
-						$validTag = $this->_parseTagChecker($tagName, true, $tagOption);
+						$validTag = $this->_parseTagChecker($tagName, true, $tagOption, 'openingCheck');
 
 						/* Get Wrapping text */
 						$getWrappingText = false;
@@ -659,11 +664,11 @@ class YourDirectory_YourClass_MiniParser
 	/**
 	 *  Check if the current tag must be parsed (return: true) or added as a text node (return: false)
 	 */
-	protected function _parseTagChecker($tagName, $isOpeningTag = false, $tagOption = null)
+	protected function _parseTagChecker($tagName, $isOpeningTag = false, $tagOption = null, $method = null)
 	{
 		$depth = $this->_depth;
 		$tagRules = $this->getTagRules($tagName);
-		list($parentTagName, $parentTagRules) = $this->_getParentTagNameAndRules($depth-1);	
+		list($parentTagName, $parentTagRules) = $this->_getParentTagNameAndRules($depth-1);
 
 		/*Tags checker*/
 		if(!$this->_isValidTag($tagName))
@@ -697,6 +702,16 @@ class YourDirectory_YourClass_MiniParser
 			}
 		}
 
+		/***
+		 * Check for opening tag
+		 * The depth has not been processed at this point, so skip all options related to parent/children elements
+		 **/
+		 
+		if($method == 'openingCheck')
+		{
+			return true;
+		}
+
 		/*Debug*/
 		if($this->__debug_tagChecker)
 		{
@@ -711,6 +726,7 @@ class YourDirectory_YourClass_MiniParser
 		if(isset($tagRules['allowedParents']))
 		{
 			$param = $tagRules['allowedParents'];
+
 			if(	(is_bool($param) && $param !== true)
 				||
 				(is_string($param) && $param == 'none')
