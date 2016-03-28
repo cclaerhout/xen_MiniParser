@@ -1,5 +1,5 @@
 <?php
-/* Mini Parser BbCodes to Html - v1.3 by Sedo - CC by 3.0*/
+/* Mini Parser BbCodes to Html - v1.33 by Sedo - CC by 3.0*/
 class YourDirectory_YourClass_MiniParser
 {
 	/**
@@ -27,6 +27,7 @@ class YourDirectory_YourClass_MiniParser
 	private $__debug_displayStackError = false;
 	private $__debug_tagChecker = false;
 	private $__debug_parserSpeed = false;
+	private $__debug_fixer = false;
 
 	/**
 	 * Original text
@@ -218,7 +219,7 @@ class YourDirectory_YourClass_MiniParser
 		{
 			echo "Time:  " . number_format(( microtime(true) - $startTime), 4) . " Seconds --- Memory: " . (memory_get_usage() - $mem) / (1024 * 1024) . "<br />";
 		}
-		
+
 		return;
 		
 		$output = $this->render();
@@ -646,6 +647,11 @@ class YourDirectory_YourClass_MiniParser
 		{
 			return;
 		}
+
+		if($text == '')
+		{
+			return;
+		}
 		
 		if (trim($text) == '' && $this->_trimTextNodes == true)
 		{
@@ -1003,7 +1009,7 @@ class YourDirectory_YourClass_MiniParser
 			$this->_simplifiedTreeOutput .= "{$tab}{$_tag} (depth: {$_depth} - id: {$_tagId})\r\n";
 
 			if(isset($branch['children'])) {
-				$onlyTextNodes = false;
+				$showTextNodes = false;
 				$branch['children'] = $this->_simplifyTree($branch['children'], $showTextNodes, $textMode, $_depth);
 			}
 		}
@@ -1024,10 +1030,281 @@ class YourDirectory_YourClass_MiniParser
 
 	public function fixer()
 	{
+		$this->_externalFormatter = false;
 		$this->_fixerMode = true;
+		$this->recalibrateTreeByLevel($this->_tree);
+
 		$render = $this->render();
 		$this->_fixerMode = false;
+
+		if($this->__debug_fixer)
+		{
+			var_dump("#######################\r\nOutput is:\r\n $render");
+		}		
+
 		return $render;
+	}
+
+	/**
+	 * Create tags map by tags Id
+	 */
+	protected $_tagsMapByTagsId = array();
+	protected $_tagsMapByTagsIdDone = false;
+
+	private $stopSiblingsPatch = false;
+	
+	public function recalibrateTreeByLevel(array &$tree, $preventRecursive = false)
+	{
+		$tree = array_values($tree);
+
+		foreach($tree as $n => &$data) {
+			if(is_string($data)) continue;
+			
+			$tag =  $data['tag'];
+			$tagId = $data['tagId'];
+			$parentTagId = $data['parentTagId'];
+			$option = $data['option'];
+			$children = (isset($data['children'])) ? $data['children'] : false;
+			$depth = $data['depth'];
+									
+			$contextIt = new Sedo_TinyQuattro_Helper_MiniIterator($tree, $data);
+
+			/***FIX BEFORE***/
+			/*Children recalibration when identical parent/children have been merged*/
+			if($parentTagId)
+			{
+				$wipParentTagId = $parentTagId;
+				$parentIt = $this->_tagsMapByTagsId[$parentTagId]['contextIt'];
+				$delta = 0;
+
+				if($parentIt->hasToMergeWithParent())
+				{
+					do{
+						$wipParentTagId = $this->_tagsMapByTagsId[$wipParentTagId]['parentTagId'];
+						
+						if(!$wipParentTagId) break;
+						
+						$parentIt = $this->_tagsMapByTagsId[$wipParentTagId]['contextIt'];
+						$delta++;
+					
+					}
+					while($parentIt->hasToMergeWithParent() && $wipParentTagId);
+					
+					//Recalibration
+					$parentTagId = $wipParentTagId;
+					$depth = $depth-$delta;
+				}
+			}
+			
+			/***NORMAL PROCESS***/
+			/*Create tags map*/
+			$this->_tagsMapByTagsId[$tagId] = array(
+				'tag' => $tag,
+				'option' => $option,
+				'tagId' => $tagId, 
+				'parentTagId' => $parentTagId,
+				'depth' => $depth,
+				'children' => $children,
+				'contextIt' =>  $contextIt //iterator keeps the tag position :)
+			);
+
+			/***FIX AFTER***/
+			/*Merge identical parent/children - ie: [b]test 1 [b]test 2[/b] test 3[/b]*/
+			if($parentTagId)
+			{
+				$parentData = $this->_tagsMapByTagsId[$parentTagId];
+				if($tag == $parentData['tag'] && $option == $parentData['option'])
+				{
+					$contextIt->mergeWithParent();
+				
+					$treeWip = array_slice($tree, 0, $n);
+					$treeEnd = array_slice($tree, $n+1, count($tree)-$n);
+
+					foreach($data['children'] as $c)
+					{
+						$this->_depthParentIdRecalibration($c, $parentData);
+						$treeWip[] = $c;
+					}
+
+					foreach($treeEnd as $e)
+					{
+						$treeWip[] = $e;		
+					}
+
+					$tree = array_values($treeWip);
+
+					$this->_tagsMapByTagsId[$tagId]['deleted'] = true;
+
+					if($children != null && !$preventRecursive) {
+						$this->recalibrateTreeByLevel($data['children']);
+					}
+					continue;
+				}
+			}
+
+			/*Merge identical siblings - ie: [b]test[/b] [b]test 2[/b]*/
+			list($prevMerge, $prevIndex, $prevTagId, $blankCatchUp) = $contextIt->prevIsSimilarToRef();
+
+			if($prevMerge && $prevTagId && !$this->stopSiblingsPatch)
+			{
+				if($blankCatchUp != null)
+				{
+					/****
+					* Dealing with previous white spaces is the most difficult thing to do 
+					* The sibling pattern can be recursive. We need to find the previous tag by skipping all nodes only made of white space
+					* (there's should only be one). This white space skipped must be added again. The safest solution is to put it back to 
+					* the last text node of children elements. This requires to use a recursive function. So doing the following thing will
+					* not be enough : $tree[$prevIndex]['children'][] = $tree[$n-1]; (to understand try: $tree[$prevIndex]['children'][] = $tree[$n-1].'stop';
+					* N.B: $tree[$n-1] and $tree[$prevIndex+1] should be the same
+					*/
+					
+					if($this->_insertCatchUpTextInLastRecursiveTextNode($tree[$prevIndex]['children'], $tree[$prevIndex+1]))
+					{
+						unset($tree[$prevIndex+1]); //Be sure to unset the blank space (branch) if it has found a location to be inserted in the children
+						// DO NOT REORDER ARRAY INDEX YET !
+					}
+					else
+					{
+						continue; // It should not happen but if it does, we don't know what you're dealing with. Keep it safe, let's just ignore this.
+					}
+					
+					/**					
+					* The above code will work with this kind of patterns:
+					*	<Ex 1>
+					*	[COLOR=#0c4acc][COLOR=#3474c8][B]Part 1[/B]Part 2[/COLOR][/COLOR]
+					*	[COLOR=#0c4acc][COLOR=#3474c8][B]Part 3[/B]Part 4[/COLOR][/COLOR]
+					*	[COLOR=#0c4acc][COLOR=#3474c8][B]Part 5[/B]Part 6[/COLOR][/COLOR]
+					*
+					*	<EX 2>
+					*	[COLOR=#0c4acc][COLOR=#3474c8]AA[/COLOR]
+					*	[COLOR=#3474c8]BB[/COLOR]
+					*	CC[/COLOR]
+					*	[COLOR=#0c4acc][COLOR=#3474c8]DD[/COLOR][/COLOR]
+					*
+					* 	<Ex 3>
+					*	[COLOR=#0c4acc]
+					*	
+					*	[COLOR=#3474c8][B]Part 1[/B][/COLOR]
+					*	
+					*	[/COLOR]
+					*	[COLOR=#0c4acc][COLOR=#3474c8][B]Part 2[/B][/COLOR][/COLOR]
+					*	[COLOR=#0c4acc][COLOR=#3474c8][B]Part 3[/B][/COLOR][/COLOR]
+					*	[COLOR=#0c4acc][COLOR=#3474c8][B]Part 4[/B][/COLOR][/COLOR]
+					***/
+				}
+				
+				foreach($data['children'] as $c)
+				{
+					//Inject tag children to parent children
+					$tree[$prevIndex]['children'][] = $c;
+					$this->_tagsMapByTagsId[$prevTagId]['children'][] = $c;
+				}
+
+				$this->_tagsMapByTagsId[$tagId]['deleted'] = true;
+
+				unset($tree[$n]);
+				$tree = array_values($tree);
+
+				//Siblings detected, let's process again the modified tree branch to detect recursive patterns
+				$this->recalibrateTreeByLevel($tree[$prevIndex]['children'], true); // disable recursion
+				continue;
+			}
+
+			if($children != null && !$preventRecursive) {
+				$this->recalibrateTreeByLevel($data['children']);
+			}
+		}
+		
+		$this->_tagsMapByTagsIdDone = true;
+	}
+
+	protected function _depthParentIdRecalibration(&$child, $parentData)
+	{
+		if(is_string($child) || !isset($parentData['tagId'], $parentData['depth'])) return;
+
+		$child['parentTagId'] = $parentData['tagId'];
+		$child['depth'] = $parentData['depth']+1;
+	}
+
+	protected function _insertCatchUpTextInLastRecursiveTextNode(array &$tree, $catchUpText = '')
+	{
+		$lastTextNodeIndex = null;
+		$lastTagNodeIndex = null;
+		$fallback = null;
+
+		foreach($tree as $n => &$data)
+		{
+			if(is_string($data) && $data != '')
+			{
+				if(trim($data) != '')
+				{
+					$lastTextNodeIndex = $n;
+				}
+				else
+				{
+					$fallback = $n;	
+				}
+			}
+			elseif(!empty($data['children']))
+			{
+				$lastTagNodeIndex = $n;
+			}
+		}
+
+		if( 	($lastTextNodeIndex !== null && $lastTagNodeIndex === null)
+			|| 
+			($lastTextNodeIndex !== null && $lastTagNodeIndex !== null && $lastTextNodeIndex > $lastTagNodeIndex)
+		)
+		{
+			$tree[$lastTextNodeIndex] .= $catchUpText;
+			return true;
+		}
+		else
+		{
+			if($lastTagNodeIndex === null && $fallback === null) return;
+			
+			if($lastTagNodeIndex === null && $fallback !== null)
+			{
+				$tree[$fallback] .= $catchUpText;
+				return true;
+			}
+			
+			return $this->_insertCatchUpTextInLastRecursiveTextNode($tree[$lastTagNodeIndex]['children'], $catchUpText); 
+		}
+		
+		return false;
+	}
+
+	public function getTagsMapByTagsId()
+	{
+		if(empty($this->_tagsMapByTagsId) && !$this->_tagsMapByTagsIdDone)
+		{
+			$this->recalibrateTreeByLevel($this->_tree);
+		}
+		
+		return $this->_tagsMapByTagsId;
+	}
+
+	public function getTagChildrenByTagId($tagId)
+	{
+		if(!isset($this->_tagsMapByTagsId[$tagId])) return null;
+		return $this->_tagsMapByTagsId[$tagId]['children'];
+	}
+
+	public function getTagSiblingsByTagId($tagId)
+	{
+		if(!isset($this->_tagsMapByTagsId[$tagId])) return null; 
+		$tagInfo = $this->_tagsMapByTagsId[$tagId];
+		$parentTagId = $tagInfo['parentTagId'];
+		
+		if(!isset($this->_tagsMapByTagsId[$parentTagId])) return null;
+		return $this->_tagsMapByTagsId[$parentTagId]['children'];
+	}
+
+	public function getContextItByTagId($tagId)
+	{
+		if(!isset($this->_tagsMapByTagsId[$tagId])) return null;
+		return $this->_tagsMapByTagsId[$tagId]['contextIt'];	
 	}
 
 	/**
@@ -1089,8 +1366,18 @@ class YourDirectory_YourClass_MiniParser
 		}
 	}
 	
-	public function renderString($string, array $rendererStates)
+	public function renderString($string, array &$rendererStates)
 	{
+		if($this->_fixerMode && !empty($rendererStates['catchUpStringsStack']))
+		{
+			$after = array_shift($rendererStates['catchUpStringsStack']);
+			$string .= $after;
+			if(empty($rendererStates['catchUpStringsStack']))
+			{
+				unset($rendererStates['catchUpStringsStack']);
+			}
+		}
+
 		return $this->filterString($string, $rendererStates);
 	}
 
@@ -1177,65 +1464,13 @@ class YourDirectory_YourClass_MiniParser
 
 	public function fixerValidTag(array $tagRules, array $tag, array &$rendererStates)
 	{
+		/*Get data*/
 		$option = $this->filterString($tag['option'], $rendererStates);
-
 		$tagName = $tag['tag'];
 		$tagId = $tag['tagId'];
 
 		$prevMerge = $nextMerge = false;
 
-		/*Check if current and parent are the same - [b]test[b]test 2[/b]test3[/b]*/
-		$parentTagName = $tag['parentTag'];
-		$parentTagOption = $this->filterString($tag['parentOption'], $rendererStates);
-
-		if($tagName == $parentTagName && $option == $parentTagOption)
-		{
-			$prevMerge = $nextMerge = true;
-		}
-
-		/*Check if siblings are the same (compatible blank space nodes) - [b]test[b] [b]test 2[/b]*/
-		$contextIt = null;
-		if((!$prevMerge && !$nextMerge))
-		{
-			$contextIt = new Sedo_TinyQuattro_Helper_MiniIterator($rendererStates['currentTree'], $tag);
-			list($prevMergeWip, $nextMergeWip) = $contextIt->sibblingRoutine();
-
-			if($prevMergeWip || $nextMergeWip) $contextIt->setModifiedSiblings();
-			if($prevMergeWip) $prevMerge = true;
-			if($nextMergeWip) $nextMerge = true;
-		}
-
-		/**
-		 * Check if parent siblings have been modified. If it is:
-		 * > check if the current tag is a uniq tag in the tree or if it is the last tag, then look forward if the next sibling parent tag has a similar first child tag
-		 * > check if the current tag is a uniq tag in the tree or if it is the first tag, then look backward if the prev sibling parent tag has a similar last child tag
-		 * Ex: [font=Times New Roman][b][i]word1[/i][/b][/font] [font=Times New Roman][b][i] word2[/i][/b][/font]
-		 **/
-
-		$parentDepth = $tag['depth'] - 1;
-		if((!$prevMerge && !$nextMerge) && isset($rendererStates['parentTreesIt'], $rendererStates['parentTreesIt'][$parentDepth]))
-		{
-			$wipDepth = $parentDepth;
-
-			do{
-				$parentContextIt = $rendererStates['parentTreesIt'][$wipDepth];
-				list($prevMergeWip, $nextMergeWip) = $this->_detectNestedIdenticalBbCodePattern($parentContextIt, $tag, $wipDepth);
-
-				if($prevMergeWip || $nextMergeWip) $contextIt->setModifiedSiblings(); // do not forget to do it ;)
-				if($prevMergeWip) $prevMerge = true;
-				if($nextMergeWip) $nextMerge = true;
-
-				if($prevMerge && $nextMerge) break;
-				$wipDepth--;
-			}
-			while(
-				isset($rendererStates['parentTreesIt'][$wipDepth])
-				&& $rendererStates['parentTreesIt'][$wipDepth]->isModifiedSiblings()
-			);
-			
-			unset($wipDepth);
-		}
-		
 		if($prevMerge && $nextMerge)
 		{
 			$prepend = '';
@@ -1258,67 +1493,14 @@ class YourDirectory_YourClass_MiniParser
 			$append = "[/{$tagName}]";		
 		}
 
-		if($contextIt != null)
+		$text = $prepend . $this->renderSubTree($tag['children'], $rendererStates) . $append;
+
+		if($this->__debug_fixer)
 		{
-			//Why save iterator and not simply branch? => iterator keeps the tag position
-			$rendererStates['parentTreesIt'][$tag['depth']] = $contextIt;
-		}
-
-		$text = $this->renderSubTree($tag['children'], $rendererStates);
-
-		return $prepend.$text.$append;
-	}
-
-	protected function _detectNestedIdenticalBbCodePattern(Sedo_TinyQuattro_Helper_MiniIterator $parentContextIt, array &$tag, $parentDepth = 1)
-	{
-		$tagName = $tag['tag'];
-		$tagId = $tag['tagId'];
-		$option = $tag['option'];
-		$parentTagId = $tag['parentTagId'];
-		
-		$parentDepth = ($parentDepth  <= 0) ?  1 : $parentDepth;
-		$recursiveLevel = $tag['depth'] - $parentDepth;
-		
-		$prevMerge = $nextMerge = false;
-		$currentTree = array_filter($parentContextIt->getChildrenFromTag());
-
-		$contextItNoBlank = new Sedo_TinyQuattro_Helper_MiniIterator($currentTree, $tag);
-		list($currentIsUniq, $currentIsFirst, $currentIsLast) = $contextItNoBlank->checkCurrentPositions();
-
-		if($currentIsUniq || $currentIsLast)
-		{
-			$parentContextIt->rewind(); // should not be needed "inside the box"
-			$parentContextIt->prevNoBlank();
-
-			$childrenFromPrevSiblingParent = $parentContextIt->getNestedChildrenByRecursiveLevel($recursiveLevel);
-			$childrenFromPrevSiblingParentIt = new Sedo_TinyQuattro_Helper_MiniIterator($childrenFromPrevSiblingParent);
-			$firstChildTagFromPrevSibling = $childrenFromPrevSiblingParentIt->getCurrentTag();
-			
-			if($firstChildTagFromPrevSibling == $tagName)
-			{
-				$firstChildOptionFromPrevSibling = $childrenFromPrevSiblingParentIt->getCurrentOption();
-				$prevMerge = (empty($tagOption)) ? true : ($tagOption == $firstChildOptionFromPrevSibling);
-			}
-		}
-
-		if($currentIsUniq || $currentIsFirst)
-		{
-			$parentContextIt->rewind();
-			$parentContextIt->nextNoBlank();
-	
-			$childrenFromNextSiblingParent = $parentContextIt->getNestedChildrenByRecursiveLevel($recursiveLevel);
-			$childrenFromNextSiblingParentIt = new Sedo_TinyQuattro_Helper_MiniIterator($childrenFromNextSiblingParent);
-			$childrenFromNextSiblingParentIt->last();
-			$lastChildTagFromNextSibling = $childrenFromNextSiblingParentIt->getCurrentTag();
-
-			if($lastChildTagFromNextSibling == $tagName)
-			{
-				$lastChildOptionFromNextSibling = $childrenFromNextSiblingParentIt->getCurrentOption();
-				$nextMerge = (empty($tagOption)) ? true : ($tagOption == $lastChildOptionFromNextSibling);
-			}				
+			var_dump("#wip >>  $text");
 		}
 		
-		return array($prevMerge, $nextMerge);
+		return $text;
 	}
 
 	public function filterString($string, array &$rendererStates)
@@ -1613,6 +1795,24 @@ class Sedo_TinyQuattro_Helper_MiniIterator implements Iterator
 		return $this->current();
 	}
 
+	public function isLast()
+	{
+		$maxIndex = $this->totalTreeEl-1;
+		return ($this->index == $maxIndex);
+	}
+
+	public function isLastNoBlank()
+	{
+		$isLast = false;
+		$this->save();
+		
+		if($this->last()) $isLast = true;
+		if($this->nextNoBlank() === null) $isLast = true;
+		
+		$this->restore();
+		return $isLast;
+	}
+
 	public function key()
 	{
 		return $this->index;
@@ -1629,6 +1829,20 @@ class Sedo_TinyQuattro_Helper_MiniIterator implements Iterator
 		return ($this->index >= 0 && $this->index <= $maxIndex);
 	}
 
+	public function isEmptyTag()
+	{
+		$current = $this->current();
+
+		if(!isset($current['children'])) return null;
+
+		// Can not use array_filter... if the string is a zero
+		if(isset($current['children'][1])) return false;
+		
+		$firstChild = $current['children'][0];
+		
+		return (trim($firstChild) == '');
+	}
+
 	public function rewind()
 	{
 		$this->index = $this->calibratedIndex;
@@ -1638,6 +1852,18 @@ class Sedo_TinyQuattro_Helper_MiniIterator implements Iterator
 	{
 		$this->tree = array_reverse($this->tree);
 		$this->rewind();
+	}
+
+	/*Modified Parent functions*/
+	protected $_mergeWithParent = false;
+	public function mergeWithParent()
+	{
+		$this->_mergeWithParent = true;
+	}
+	
+	public function hasToMergeWithParent()
+	{
+		return $this->_mergeWithParent;
 	}
 
 	/*Modified Siblings functions*/
@@ -1657,23 +1883,30 @@ class Sedo_TinyQuattro_Helper_MiniIterator implements Iterator
 	{
 		$index = $this->index;
 		$lastIndex = $this->totalTreeEl-1;
-		
+		$isOnlyTextNode = ($this->totalTreeEl == 0);
+
 		$isFirstPos = ($index == 0);
-		$isLastPos = ($index == $lastIndex);
+		$isLastPos = ($index == $lastIndex || $isOnlyTextNode);
 		$isUniq = ($isFirstPos && $isLastPos);
-		
+
 		return array($isUniq, $isFirstPos, $isLastPos);
 	}
 
 	/*Detect identical sibblings routine*/	
 	public function sibblingRoutine()
 	{
+		list($prevMerge, $prevIndex) = $this->prevIsSimilarToRef();
+		list($nextMerge, $nextIndex) = $this->nextIsSimilarToRef();
+		return array($prevMerge, $nextMerge);
+	}
+
+	public function prevIsSimilarToRef()
+	{
 		$prevMerge = false;
-		$nextMerge = false;
-
 		$prevIsBlank = false;
-		$nextIsBlank = false;
-
+		$prevId = null;
+		$blankCatchUp = null;
+		
 		$this->prev();
 		if($this->currentIsSimilarToRef())
 		{
@@ -1681,20 +1914,38 @@ class Sedo_TinyQuattro_Helper_MiniIterator implements Iterator
 		}
 		elseif($this->isCurrentBlankString())
 		{
-			$prevIsBlank = true;
-		}
-			
-		if($prevIsBlank)
-		{
-			$this->prev();
+			$blankCatchUp = true;
+		
+			do{
+				$this->prev();
+			}
+			while($this->isCurrentBlankString() && $this->isValidIndex());
 
 			if($this->currentIsSimilarToRef('prevBlank'))
 			{
 				$prevMerge = true;
-			}
+			}			
 		}
-			
-		$this->rewind();
+
+		if($prevMerge && $this->isCurrentTag())
+		{
+			$tag = $this->current();
+			$prevId = $tag['tagId'];
+		}
+		
+		$prevIndex = $this->index;
+		$this->rewind();	
+
+		return array($prevMerge, $prevIndex, $prevId, $blankCatchUp);
+	}
+
+	public function nextIsSimilarToRef()
+	{
+		$nextMerge = false;
+		$nextIsBlank = false;	
+		$nextId = null;
+		$blankCatchUp = null;
+
 		$this->next();
 		
 		if($this->currentIsSimilarToRef())
@@ -1703,21 +1954,29 @@ class Sedo_TinyQuattro_Helper_MiniIterator implements Iterator
 		}
 		elseif($this->isCurrentBlankString())
 		{
-			$nextIsBlank = true;			
-		}
+			$blankCatchUp = true;
+			
+			do{
+				$this->next();
+			}
+			while($this->isCurrentBlankString() && $this->isValidIndex());
 
-		if($nextIsBlank)
-		{
-			$this->next();
 			if($this->currentIsSimilarToRef('nextBlank'))
 			{
 				$nextMerge = true;
-			}
+			}		
 		}
-		
+
+		if($prevMerge && $this->isCurrentTag())
+		{
+			$tag = $this->current();
+			$nextId = $tag['tagId'];
+		}
+
+		$nextIndex = $this->index;
 		$this->rewind();
-		
-		return array($prevMerge, $nextMerge);
+
+		return array($prevMerge, $nextIndex, $nextId, $blankCatchUp);
 	}
 
 	public function currentIsSimilarToRef($debug = null)
@@ -1748,33 +2007,6 @@ class Sedo_TinyQuattro_Helper_MiniIterator implements Iterator
 		{
 			return true;
 		}
-	}
-	
-	/*Recursive emulation only for tags - recursive base: first child tag*/	
-	public function getNestedChildrenByRecursiveLevel($recursiveLevel, array $children = null)
-	{
-		if($children == null)
-		{
-			//First level, so $i must start at 1, array_filter to clean empty and array_values to reindex
-			$children = array_values(array_filter($this->getChildrenFromTag()));
-		}
-
-		for($children, $i = 1; $i < $recursiveLevel; $i++){ 
-			if(empty($children) || !isset($children[0], $children[0]['children']))
-			{
-				return array();
-			}
-			
-			$children = array_values(array_filter($children[0]['children']));
-			
-		}
-
-		if(empty($children) || !is_array($children))
-		{
-			return array();
-		}
-				
-		return $children;	
 	}
 	
 	/*Get only tags from tree => which are designed as array and not string*/
