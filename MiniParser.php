@@ -1,5 +1,5 @@
 <?php
-/* Mini Parser BbCodes to Html - v1.35 by Sedo - CC by 3.0*/
+/* Mini Parser BbCodes to Html - v1.4.0 by Sedo - CC by 3.0*/
 class YourDirectory_YourClass_MiniParser
 {
 	/**
@@ -14,12 +14,14 @@ class YourDirectory_YourClass_MiniParser
 	protected $_htmlspecialcharsForOptions = true;
 	protected $_renderStates = array();
 	protected $_checkClosingTag = false; 		// Check if a closing tag exists for the tag being processed
+	protected $_checkSelfClosingTag = false;	// Check self closing tags (do not forget to configure Bb Code)
 	protected $_preventHtmlBreak = false;		// For private use (protect Bb Code and avoid page break) 
 	protected $_externalFormatter = false; 		// To be valid, it must be an array with the class & the method
 	protected $_mergeAdjacentTextNodes = false; 	// Should not do any difference
 	protected $_autoRecalibrateStack = false; 	// WIP... not that good
 	protected $_nl2br = true;
 	protected $_trimTextNodes = true;		//Should be set to false with standard Bb Codes
+
 
 	/**
 	 * Parser debug - bolean values needs to be changed manualy
@@ -203,6 +205,11 @@ class YourDirectory_YourClass_MiniParser
 			{
 				$this->_trimTextNodes = $parserOptions['trimTextNodes'];
 			}
+			
+			if(isset($parserOptions['checkSelfClosingTag']))
+			{
+				$this->_checkSelfClosingTag = $parserOptions['checkSelfClosingTag'];
+			}
 		}
 
 		if($this->__debug_parserSpeed)
@@ -240,7 +247,7 @@ class YourDirectory_YourClass_MiniParser
 		$poc = $this->_parserOpeningCharacterRegex;
 		$pcc = $this->_parserClosingCharacterRegex;
 
-		return preg_split('#'.$poc.'(/?)([^'.$pcc.']*)'.$pcc.'#u', $text, -1, PREG_SPLIT_DELIM_CAPTURE);
+		return preg_split('#'.$poc.'(/?)([^'.$pcc.$poc.']*)'.$pcc.'#u', $text, -1, PREG_SPLIT_DELIM_CAPTURE);
 	}
 	
 	protected $_stringTreePos = 0;
@@ -275,10 +282,10 @@ class YourDirectory_YourClass_MiniParser
 				break;
 
 				case 2:
-					if ($closing)
+					if($closing)
 					{
 						$tagName = strtolower($value);
-						
+
 						//The fallback must use the value and not the tagName to output valid datas from mal formed closing tag (ie: [/quote)
 						$fallBack = $this->_parserOpeningCharacter.'/'.$value.$this->_parserClosingCharacter;
 
@@ -294,6 +301,7 @@ class YourDirectory_YourClass_MiniParser
 
 						/*Unexpected Closing Tag Management*/
 						$expected = array_pop($this->_openedTagsStack);
+
 						$id = $expected['tagId'];
 						
 						if ($tagName != $expected['tagName'])
@@ -335,6 +343,12 @@ class YourDirectory_YourClass_MiniParser
 					}
 					else
 					{
+						$selfClosingTag = false;
+						if($this->_checkSelfClosingTag && substr($value, -1, 1) == '/')
+						{
+							$selfClosingTag = true;
+						}
+
 						$missingClosingTagDetected = false;
 						$htmlBreakDetected = false;
 
@@ -345,11 +359,22 @@ class YourDirectory_YourClass_MiniParser
 						{
 							$tagName = $value;
 							$tagOption = null;
+							
+							if($selfClosingTag)
+							{
+								$tagName = trim(substr($tagName, 0, -1));
+							}
 						}
 						else
 						{
 							$tagName = substr($value, 0, $tagOptionPosition);
 							$tagOption = substr($value, $tagOptionPosition+1);
+
+							if($selfClosingTag)
+							{
+								$tagOption = substr($tagOption, 0, -1);
+							}
+							
 							$tagOption = (trim($tagOption)) ? $tagOption : null;
 						}
 
@@ -357,9 +382,9 @@ class YourDirectory_YourClass_MiniParser
 						$tagName = strtolower($tagName);
 
 						$openingFallBack = $this->_parserOpeningCharacter.$value.$this->_parserClosingCharacter;
-						$closingFallBack = $this->_parserOpeningCharacter.'/'.$tagNameValue.$this->_parserClosingCharacter;
+						$closingFallBack = ($selfClosingTag) ? '' : $this->_parserOpeningCharacter.'/'.$tagNameValue.$this->_parserClosingCharacter;						
 
-						$validTag = $this->_parseTagChecker($tagName, true, $tagOption, 'openingCheck');
+						$validTag = $this->_parseTagChecker($tagName, true, $tagOption, 'openingCheck', $selfClosingTag);
 
 						/* Get Wrapping text */
 						$getWrappingText = false;
@@ -374,7 +399,7 @@ class YourDirectory_YourClass_MiniParser
 							list($textBefore, $textAfter) = $this->_getWrappingText();
 
 							/* Missing closing tag detection */
-							if($this->_checkClosingTag && $validTag)
+							if($this->_checkClosingTag && $validTag && !$selfClosingTag)
 							{
 								$missingClosingTagDetected = (strpos($textAfter, $closingFallBack) === false);
 								//Zend_Debug::dump($textAfter);
@@ -389,7 +414,6 @@ class YourDirectory_YourClass_MiniParser
 								if(preg_match('#.*<(?!/)[^>]+?(?<!/)>?$#sui', $bbcontent))
 								{
 									$htmlBreakDetected = true;
-									
 								}
 							}
 						}
@@ -419,11 +443,14 @@ class YourDirectory_YourClass_MiniParser
 						$tagId = $this->_tagId++;
 
 						/*Add tagName & its ID to the openTags stack*/
-						$this->_openedTagsStack[] = array(
-							'tagName' => $tagName,
-							'tagId' => $tagId,
-							'theoricalDepth' => $this->_depth
-						);
+						if(!$selfClosingTag)
+						{
+							$this->_openedTagsStack[] = array(
+								'tagName' => $tagName,
+								'tagId' => $tagId,
+								'theoricalDepth' => $this->_depth
+							);
+						}
 
 						/*Check if next nodes must be activated with the current opening tag*/
 						$this->_enableDisableTextNodes($tagName, true);
@@ -441,7 +468,8 @@ class YourDirectory_YourClass_MiniParser
 							'depth' => $this->_depth,
 							'parentTag' => $this->_parentTag[$this->_depth-1]['tag'],
 							'parentOption' => $this->_parentTag[$this->_depth-1]['option'],
-							'parentTagId' => $this->_parentTag[$this->_depth-1]['tagId']
+							'parentTagId' => $this->_parentTag[$this->_depth-1]['tagId'],
+							'selfClosingTag' => $selfClosingTag
 						);
 
 						preg_replace('#.#su', '', $value, -1, $length);
@@ -449,8 +477,17 @@ class YourDirectory_YourClass_MiniParser
 						
 						$this->_pushOpeningTagSuccess($tagName, $tagInfo);
 
-						/*Here comes the recursive*/
-						$tagInfo['children'] = $this->_buildTree();
+						if($selfClosingTag)
+						{
+							$this->_depth--;
+							$tagInfo['children'] = array();
+						}
+						else
+						{
+							/*Here comes the recursive*/
+							$tagInfo['children'] = $this->_buildTree();
+						}
+
 						$nodes[] = $tagInfo;
 					}
 				break;
@@ -544,7 +581,11 @@ class YourDirectory_YourClass_MiniParser
 			The current tag will be the parent of the nested children
 		*/
 		$this->_parentTag[$this->_depth] = $tagInfo;
-		$this->_openedTagsInfo[$this->_tagId-1] = $tagInfo;
+		
+		if(empty($tagInfo['selfClosingTag']))
+		{
+			$this->_openedTagsInfo[$this->_tagId-1] = $tagInfo;
+		}
 
 		/*Plain Text Mode: enable*/
 		if(!empty($tagRules['plainText']))
@@ -697,7 +738,7 @@ class YourDirectory_YourClass_MiniParser
 	/**
 	 *  Check if the current tag must be parsed (return: true) or added as a text node (return: false)
 	 */
-	protected function _parseTagChecker($tagName, $isOpeningTag = false, $tagOption = null, $method = null)
+	protected function _parseTagChecker($tagName, $isOpeningTag = false, $tagOption = null, $method = null, $selfClosingTag = false)
 	{
 		$depth = $this->_depth;
 		$tagRules = $this->getTagRules($tagName);
@@ -719,6 +760,11 @@ class YourDirectory_YourClass_MiniParser
 		if($this->_plainTextMode && $this->_plainTextMode != $tagName)
 		{
 			return false;
+		}
+
+		if($selfClosingTag && empty($tagRules['selfClosingTag']))
+		{
+			return false;		
 		}
 
 		/*Tags options checker*/
@@ -1462,7 +1508,7 @@ class YourDirectory_YourClass_MiniParser
 			
 			$option = $this->filterString($tag['option'], $rendererStates);
 
-			list($prepend, $append) = $tagInfo['replace'];
+			list($prepend, $append) = $tagRules['replace'];
 			return $this->wrapInHtml($prepend, $append, $text, $option);
 		}
 		else if(!empty($tagRules['stringReplace']))
