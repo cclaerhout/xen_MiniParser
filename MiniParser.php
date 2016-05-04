@@ -1,6 +1,6 @@
 <?php
 /* Mini Parser BbCodes to Html - v1.4.0 WIP by Sedo - CC by 3.0*/
-class Sedo_TinyQuattro_Helper_MiniParser
+class Sedo_MiniParser
 {
 	/**
 	 * Parser configuration
@@ -12,18 +12,21 @@ class Sedo_TinyQuattro_Helper_MiniParser
 	protected $_parserDepthLimit = 50;
 	protected $_parsingMode = 'bbcode';		// Choices: bbcode or html
 	protected $_parserNamespace = '';		// Allow to setup a namespace to parse only tags with it;ie: <wdp:articles limit="5"></wdp:articles>
-	protected $_htmlspecialcharsForContent = true;
-	protected $_htmlspecialcharsForOptions = true;
-	protected $_renderStates = array();
+	protected $_getAllTags = false;			// Set true to match all tags (tagRules can then just be an empty array)
+	protected $_htmlspecialcharsForContent = true;  // Apply htmlspecialchars on content
+	protected $_htmlspecialcharsForOptions = true;  // Apply htmlspecialchars on options
 	protected $_checkClosingTag = false; 		// Check if a closing tag exists for the tag being processed
 	protected $_checkSelfClosingTag = false;	// Check self closing tags (do not forget to configure Bb Code)
 	protected $_preventHtmlBreak = false;		// For private use (protect Bb Code and avoid page break) 
 	protected $_externalFormatter = false; 		// To be valid, it must be an array with the class & the method
 	protected $_mergeAdjacentTextNodes = false; 	// Should not do any difference
 	protected $_autoRecalibrateStack = false; 	// WIP... not that good
-	protected $_nl2br = true;
+	protected $_nl2br = true;			// Apply nl2br on text nodes
 	protected $_trimTextNodes = true;		// Should be set to false with standard Bb Codes
 	protected $_encoding = 'utf-8';			// Used for the html parsing mode
+	protected $_matchNestedTagsInOpeningTags = false; // [bbcode] Match nested tags in option such as [abc=[b]def[/b]]content[/abc]
+
+	protected $_renderStates = array();		// If needed you can add data to renderStates here
 
 
 	/**
@@ -240,7 +243,17 @@ class Sedo_TinyQuattro_Helper_MiniParser
 			if(isset($parserOptions['encoding']))
 			{
 				$this->_encoding = $parserOptions['encoding'];
-			}			
+			}
+	
+			if(isset($parserOptions['getAllTags']))
+			{
+				$this->_getAllTags = $parserOptions['getAllTags'];
+			}
+			
+			if(isset($parserOptions['matchNestedTagsInOpeningTags']))
+			{
+				$this->_matchNestedTagsInOpeningTags = $parserOptions['matchNestedTagsInOpeningTags'];
+			}		
 		}
 
 		if($this->__debug_parserSpeed)
@@ -253,15 +266,24 @@ class Sedo_TinyQuattro_Helper_MiniParser
 		{
 			$text = $this->_htmlEscapeSpecials($text);
 		}
+		else
+		{
+			$text = $this->_bbcodeEscapeSpecials($text);
+		}
 
 		$this->_text = $text;
 		$this->_matches = $this->_getMatchesFromSplitRegex($text);
 		reset($this->_matches);
 		$this->_tree = $this->_buildTree();
 
-		if($this->_parsingMode == 'html' && $this->_htmlEscaped)
+		if($this->_parsingMode == 'html' && $this->_textEscaped)
 		{
-			$this->_tree = $this->_htmlUnescapeSpecials($tree);
+			$this->_tree = $this->_htmlUnescapeSpecials($this->_tree);
+		}
+
+		if($this->_parsingMode == 'bbcode' && $this->_textEscaped)
+		{
+			$this->_tree = $this->_bbcodeUnescapeSpecials($this->_tree);
 		}
 
 		if($this->__debug_parserSpeed)
@@ -623,9 +645,9 @@ class Sedo_TinyQuattro_Helper_MiniParser
 	}
 
 	/***
-	* HTML Parsing dedicated functions
+	* HTML/BBCODE pre/post parsing functions
 	**/
-	protected $_htmlEscaped = false;
+	protected $_textEscaped = false;
 	
 	protected function _htmlEscapeSpecials($html)
 	{
@@ -633,15 +655,15 @@ class Sedo_TinyQuattro_Helper_MiniParser
 		$html = preg_replace_callback('#<\!--.+-->#sU', array($this, '_htmlEscapeSpecials_callback'), $html);
 		
 		/*...and processing options*/
-		$html = preg_replace_callback('#<\?.+\?>#sU', array($this, '_htmlEscapeSpecials_callback'), $html);
-		# => need to check this one...
+		$html = preg_replace_callback('#(?<=<)([\S]+?[\s](?:[\s]*[\S]+?=([\'"]).*?\2[\s]*)+?)\/?(?=>)#sU', array($this, '_htmlEscapeSpecials_callback'), $html);
+		//=> We are escaping and not parsing here: no need to match both identical opening & closing tags. Matching only the opening tag is enough.
 		
 		return $html;
 	}
-	
+
 	protected function _htmlEscapeSpecials_callback($m)
 	{
-		$this->_htmlEscaped = true;
+		$this->_textEscaped = true;
 		
 		$text = $m[0];
 		
@@ -655,12 +677,71 @@ class Sedo_TinyQuattro_Helper_MiniParser
 		return $text;
 	}
 
-	protected function _htmlUnescapeSpecials(array $tree)
+	protected function _htmlUnescapeSpecials($tree)
 	{
 		return is_array($tree) ? array_map(array($this, '_htmlUnescapeSpecials'), $tree) : str_replace
 		(
 			array("\x01", "\x02"),
 			array('<', '>'),
+			$tree
+		);
+	}
+
+	protected function _bbcodeEscapeSpecials($html)
+	{
+		$poc = $this->_parserOpeningCharacterRegex;
+		$pcc = $this->_parserClosingCharacterRegex;
+		
+		/**
+		 * Escape options
+		 * The below regex will only match any opening tags with nested parsing character inside their option
+		 */
+		if($this->_matchNestedTagsInOpeningTags)
+		{
+			$html = preg_replace_callback(
+				'#'.$poc.'(?P<tagname>[\w\d]+?=)(?:'.$poc.'([\w\d]+?)(?:=.+?)?'.$pcc.'.+?'.$poc.'/\2'.$pcc.'|[^'.$poc.$pcc.'])+?'.$pcc.'#ui', 
+				array($this, '_bbcodeEscapeSpecials_callback'),
+				$html
+			);
+		}
+
+		return $html;
+	}
+
+	protected function _bbcodeEscapeSpecials_callback($m)
+	{
+		$this->_textEscaped = true;
+		
+		$full = $m[0];
+		$content = substr($full, 1, -1);
+		$tagname = $m['tagname'];
+		
+		$poc = $this->_parserOpeningCharacter;
+		$pcc = $this->_parserClosingCharacter;
+
+		$content = str_replace
+		(
+			array($poc, $pcc),
+			array("\x01", "\x02"),
+			$content
+		);
+
+		$o = "{$poc}{$content}{$pcc}";
+
+		return "{$poc}{$content}{$pcc}";
+	}
+
+	protected function _bbcodeUnescapeSpecials($tree)
+	{
+		if(!$this->_matchNestedTagsInOpeningTags)
+		{
+			return $tree;
+		}
+
+		return is_array($tree) ? array_map(array($this, '_bbcodeUnescapeSpecials'), $tree) : str_replace
+		(
+			array("\x01", "\x02"),
+			array($this->_parserOpeningCharacter, $this->_parserClosingCharacter),
 			$tree
 		);
 	}
@@ -931,9 +1012,9 @@ class Sedo_TinyQuattro_Helper_MiniParser
 			return false;
 		}
 
-		if($selfClosingTag && empty($tagRules['selfClosingTag']))
+		if($selfClosingTag && (empty($tagRules['selfClosingTag']) && !$this->_getAllTags))
 		{
-			return false;		
+			return false;
 		}
 
 		/*Tags options checker*/
@@ -1074,6 +1155,11 @@ class Sedo_TinyQuattro_Helper_MiniParser
 	 */
 	protected function _isValidTag($tagName)
 	{
+		if($this->_getAllTags)
+		{
+			return true;
+		}
+
 		return array_key_exists($tagName, $this->_tagsRules);
 	}
 
@@ -2293,3 +2379,4 @@ class Sedo_TinyQuattro_Helper_MiniIterator implements Iterator
 }
 //Source: http://www.weirdog.com/blog/php/un-parser-html-des-plus-leger.html
 //Zend_Debug::dump($abc);
+
