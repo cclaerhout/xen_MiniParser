@@ -25,6 +25,7 @@ class Sedo_MiniParser
 	protected $_trimTextNodes = true;		// Should be set to false with standard Bb Codes
 	protected $_encoding = 'utf-8';			// Used for the html parsing mode
 	protected $_matchNestedTagsInOpeningTags = false; // [bbcode] Match nested tags in option such as [abc=[b]def[/b]]content[/abc]
+	protected $_parserCheckParentChildren = true;	// The easiest way: don't specify any rules, but if you already set them, just disable them here
 
 	protected $_renderStates = array();		// If needed you can add data to renderStates here
 
@@ -253,7 +254,12 @@ class Sedo_MiniParser
 			if(isset($parserOptions['matchNestedTagsInOpeningTags']))
 			{
 				$this->_matchNestedTagsInOpeningTags = $parserOptions['matchNestedTagsInOpeningTags'];
-			}		
+			}
+			
+			if(isset($parserOptions['parserCheckParentChildren']))
+			{
+				$this->_parserCheckParentChildren = $parserOptions['parserCheckParentChildren'];
+			}
 		}
 
 		if($this->__debug_parserSpeed)
@@ -655,7 +661,7 @@ class Sedo_MiniParser
 		$html = preg_replace_callback('#<\!--.+-->#sU', array($this, '_htmlEscapeSpecials_callback'), $html);
 		
 		/*...and processing options*/
-		$html = preg_replace_callback('#(?<=<)([\S]+?[\s](?:[\s]*[\S]+?=([\'"]).*?\2[\s]*)+?)\/?(?=>)#sU', array($this, '_htmlEscapeSpecials_callback'), $html);
+		$html = preg_replace_callback('#(?<=<)([^\s<>]+?[\s](?:[\s]*[\S]+?=([\'"]).*?\2[\s]*)+?)\/?(?=>)#sU', array($this, '_htmlEscapeSpecials_callback'), $html);
 		//=> We are escaping and not parsing here: no need to match both identical opening & closing tags. Matching only the opening tag is enough.
 		
 		return $html;
@@ -1036,7 +1042,7 @@ class Sedo_MiniParser
 		 * The depth has not been processed at this point, so skip all options related to parent/children elements
 		 **/
 		 
-		if($method == 'openingCheck')
+		if($method == 'openingCheck' || !$this->_parserCheckParentChildren)
 		{
 			return true;
 		}
