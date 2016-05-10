@@ -1,6 +1,6 @@
 <?php
 /* Mini Parser BbCodes to Html - v1.4.0 WIP by Sedo - CC by 3.0*/
-class Sedo_MiniParser
+class Sedo_TinyQuattro_Helper_MiniParser
 {
 	/**
 	 * Parser configuration
@@ -507,7 +507,7 @@ class Sedo_MiniParser
 						$tagInfo = array(
 							'tagId' => $tagId,
 							'tag' => $tagName,
-							'option' => ($this->_htmlspecialcharsForOptions) ?
+							'option' => ($this->_htmlspecialcharsForOptions && is_string($tagOption)) ?
 								htmlspecialchars($tagOption) : $tagOption,
 							'original' => array(
 								0 => $openingFallBack,
@@ -586,7 +586,7 @@ class Sedo_MiniParser
 		if($hasTagOption === false)
 		{
 			$tagName = $value;
-			$tagOption = null;
+			$tagOption = array();
 			
 			if($selfClosingTag)
 			{
@@ -607,7 +607,7 @@ class Sedo_MiniParser
 				$tagOption = substr($tagOption, 0, -1);
 			}
 			
-			$tagOption = (trim($tagOption)) ? $this->parseHtmlTagOption($tagOption) : null;
+			$tagOption = $this->parseHtmlTagOption($tagOption);
 		}
 		
 		return array($tagName, $tagOption);
@@ -619,8 +619,13 @@ class Sedo_MiniParser
 		preg_match_all('#\s*([^=]+)\s*=\s*["\']([^"\']+)["\']#', $tagOption, $matches, PREG_SET_ORDER);
 
 		/*Transform the matches into a nice key/value array*/
-		$attributes = array();
+		$attributes = array(
+			'_original' => $tagOption,
+			'style' => array()
+		);
 
+		if(empty($matches)) return $attributes;
+		
 		foreach ($matches as $m)
 		{
 			/* unescape the html entities of the argument's value*/
@@ -649,6 +654,79 @@ class Sedo_MiniParser
 
 		return $attributes;
 	}
+
+	public function flattenHtmlTagOption(array $tagOption)
+	{
+		$flattenOption = '';
+		
+		if(empty($tagOption))
+		{
+			return $flattenOption;
+		}
+
+		if(!empty($tagOption['style']))
+		{
+			$styleData = $tagOption['style'];
+			$style = array();
+
+			foreach($styleData as $cssProperty => $cssVal)
+			{
+				$style[] = "{$cssProperty}:{$cssVal}";
+			}
+			
+			$tagOption['style'] = implode('; ', $style);
+		}
+		else
+		{
+			unset($tagOption['style']);
+		}
+
+		$properties = array();
+		foreach($tagOption as $propertyName => $propertyData)
+		{
+			if($propertyName[0] == '_') continue;
+			$properties[] = "{$propertyName}=\"{$propertyData}\"";
+		}
+
+		$flattenOption = implode(' ', $properties);
+
+		return $flattenOption;
+	}
+
+	public function sanitizeHtmlTagOption(array $tagOption, $preventRecursion = false)
+	{
+		foreach($tagOption as $k => &$attr)
+		{
+			if(is_array($attr) )
+			{
+				if(!$preventRecursion)
+				{
+					$attr = $this->sanitizeHtmlTagOption($attr);
+				}
+				continue;
+			}
+			
+			if($k[0] == '_')
+			{
+				unset($tagOption[$k]);
+				continue;
+			}
+		}
+		
+		return $tagOption;
+	}
+
+	public function getHtmlStyleOption(array $tagOption, $sanitize = true)
+	{
+		$styleOption = $tagOption['style'];
+
+		if($sanitize)
+		{
+			$styleOption = $this->sanitizeHtmlTagOption($styleOption, true);
+		}
+		
+		return $styleOption;
+	}	
 
 	/***
 	* HTML/BBCODE pre/post parsing functions
@@ -1263,6 +1341,16 @@ class Sedo_MiniParser
 	public function getTree()
 	{
 		return $this->_tree;
+	}
+
+	/**
+	 * Set the tree
+	 *
+	 * Can be used after process
+	 */
+	public function setTree($tree)
+	{
+		$this->_tree = $tree;
 	}
 
 	/**
