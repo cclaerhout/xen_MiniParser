@@ -1,6 +1,6 @@
 <?php
 /* Mini Parser BbCodes to Html - v1.4.0 WIP by Sedo - CC by 3.0*/
-class Sedo_TinyQuattro_Helper_MiniParser
+class Sedo_MiniParser
 {
 	/**
 	 * Parser configuration
