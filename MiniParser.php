@@ -671,6 +671,7 @@ class Sedo_MiniParser
 
 			foreach($styleData as $cssProperty => $cssVal)
 			{
+				if($cssProperty[0] == '_') continue;
 				$style[] = "{$cssProperty}:{$cssVal}";
 			}
 			
@@ -718,6 +719,11 @@ class Sedo_MiniParser
 
 	public function getHtmlStyleOption(array $tagOption, $sanitize = true)
 	{
+		if(!isset($tagOption['style']))
+		{
+			return array();
+		}
+
 		$styleOption = $tagOption['style'];
 
 		if($sanitize)
@@ -1248,6 +1254,15 @@ class Sedo_MiniParser
 	}
 
 	/**
+	 * Force closing tag to be valid (might be needed sometimes when extended this class)
+	 */
+	protected function _makeClosingTagValid($tagId)
+	{
+		if(!isset($this->_openedTagsInfo[$tagId])) return;
+		$this->_openedTagsInfo[$tagId]['validClosingTag'] = true;
+	}
+
+	/**
 	 * Get the parent tag name & rules
 	 * Returns an array with both values
 	 */
@@ -1577,6 +1592,13 @@ class Sedo_MiniParser
 
 			/*Merge identical siblings - ie: [b]test[/b] [b]test 2[/b]*/
 			list($prevMerge, $prevIndex, $prevTagId, $blankCatchUp) = $contextIt->prevIsSimilarToRef();
+
+			if(!isset($this->_tagsMapByTagsId[$prevTagId]))
+			{
+				//To do: understand why this pb can happen sometimes
+				//Purpose: do not create a fake map with this line: $this->_tagsMapByTagsId[$prevTagId]['children'][]
+				continue;
+			}
 
 			if($prevMerge && $prevTagId && !$this->stopSiblingsPatch)
 			{
@@ -2473,4 +2495,3 @@ class Sedo_TinyQuattro_Helper_MiniIterator implements Iterator
 }
 //Source: http://www.weirdog.com/blog/php/un-parser-html-des-plus-leger.html
 //Zend_Debug::dump($abc);
-
