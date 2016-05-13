@@ -745,7 +745,7 @@ class Sedo_MiniParser
 		$html = preg_replace_callback('#<\!--.+-->#sU', array($this, '_htmlEscapeSpecials_callback'), $html);
 		
 		/*...and processing options*/
-		$html = preg_replace_callback('#(?<=<)([^\s<>]+?[\s](?:[\s]*[\S]+?=([\'"]).*?\2[\s]*)+?)\/?(?=>)#sU', array($this, '_htmlEscapeSpecials_callback'), $html);
+		$html = preg_replace_callback('#(?<=<)([^\s<>]+?[\s](?:[\s]*[\S]+?=([\'"]).*?\2[\s]*)+?)\/?(?=>)#', array($this, '_htmlEscapeSpecials_callback'), $html);
 		//=> We are escaping and not parsing here: no need to match both identical opening & closing tags. Matching only the opening tag is enough.
 		
 		return $html;
