@@ -1962,6 +1962,8 @@ class Sedo_MiniParser
 		}
 		
 		$string = htmlspecialchars($string);
+		
+		return $string;
 	}
 
 	public function wrapInHtml($prepend, $append, $text, $option = null)
