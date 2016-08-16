@@ -1,5 +1,5 @@
 <?php
-/* Mini Parser BbCodes to Html - v1.4.0 WIP by Sedo - CC by 3.0*/
+/* Mini Parser BbCodes to Html - v1.4.0 WIP - 160816#1 by Sedo - CC by 3.0*/
 class Sedo_MiniParser
 {
 	/**
@@ -837,10 +837,116 @@ class Sedo_MiniParser
 	}
 
 	/* Annexe functions to main ones*/
+	protected $_prevTextAfter = null;
+	protected $_prevTextPos = 0;
+	
+	protected function _getWrappingText($getTextBefore = false)
+	{
+		//The getTextBefore feature is only for reference.
+		
+		$pos = $this->_stringTreePos;
+		$method = 'regex';
+		
+		$delta = $pos - $this->_prevTextPos;
+		$wipTextAfter = ($this->_prevTextAfter) ? $this->_prevTextAfter : $this->_text;
+
+		$textBefore = '';
+		$textAfter = '';
+
+		if($method == 'regex')
+		{
+			if(!$getTextBefore)
+			{
+				//a too high number in {} will trigger an error, so let's split it
+				$regexMax = 5000;
+
+				if($delta <= $regexMax)
+				{
+					$regex = '.{'.$delta.'}';
+				}
+				else
+				{
+					$nRegex = floor($delta/$regexMax);
+					$diffRegex = $delta - ($regexMax*$nRegex);
+					$regex = str_repeat('.{'.$regexMax.'}', $nRegex) . '.{' . $diffRegex . '}';
+				}
+
+				$regex = '#^'.$regex.'#sui';
+				$textAfter = preg_replace($regex, '', $wipTextAfter);
+			}
+			else
+			{
+
+				//a too high number in {} will trigger an error, so let's split it
+				$regexMax = 5000;
+
+				if($pos <= $regexMax)
+				{
+					$regex = '.{'.$pos.'}';
+				}
+				else
+				{
+					$nRegex = floor($pos/$regexMax);
+					$diffRegex = $pos - ($regexMax*$nRegex);
+					$regex = str_repeat('.{'.$regexMax.'}', $nRegex) . '.{' . $diffRegex . '}';
+				}
+
+				$regex = '#^(?<before>'.$regex.')(?<after>.*)$#sui';
+				$textBefore = '';
+				$textAfter = '';
+
+				if(preg_match($regex, $this->_text, $match))
+				{
+					$textBefore = $match['before'];
+					$textAfter = $match['after'];
+				}
+			}
+		}
+		elseif($method == 'mb_substr')
+		{
+			/**
+			 * Problems:
+			 * 1) said as very slow (even if I'm not sure the regex method is faster)
+			 * 2) not in all php installation
+			 **/
+			
+			if($getTextBefore)
+			{
+				$textBefore = mb_substr($this->_text, 0, $pos);
+			}
+			  
+			$textAfter = mb_substr($wipTextAfter, $delta);
+		}
+		elseif($method == 'substr')
+		{
+			/**
+			 * Problem:
+			 * 1) not utf compatible
+			 **/
+
+			//$text = utf8_encode($this->_text); //Worse performance than the two above solutions
+			$text = $this->_text;
+
+			if($getTextBefore)
+			{
+				$textBefore = substr($text, 0, $pos);
+			}
+			
+			$textAfter = substr($wipTextAfter, $delta);
+		}
+
+		$this->_prevTextAfter = $textAfter;
+		$this->_prevTextPos = $pos;
+		
+		return array($textBefore, $textAfter);
+	}
+
+	/***
+	//Former function for reference
 	protected function _getWrappingText($getTextBefore = false)
 	{
 		$pos = $this->_stringTreePos;
-		$method = 'regex';
+		$method = 'substr';
 		
 		$textBefore = '';
 		$textAfter = '';
@@ -881,12 +987,6 @@ class Sedo_MiniParser
 		}
 		elseif($method == 'mb_substr')
 		{
-			/**
-			 * Problems:
-			 * 1) said as very slow (even if I'm not sure the regex method is faster
-			 * 2) not in all php installation
-			 **/
-			
 			if($getTextBefore)
 			{
 				$textBefore = mb_substr($this->_text, 0, $this->_stringTreePos);
@@ -896,21 +996,20 @@ class Sedo_MiniParser
 		}
 		elseif($method == 'substr')
 		{
-			/**
-			 * Problem:
-			 * 1) not utf compatible
-			 **/
+			//$text = utf8_encode($this->_text); //Worse performance than the two above solutions
+			$text = $this->_text;
 
 			if($getTextBefore)
 			{
-				$textBefore = mb_substr($this->_text, 0, $this->_stringTreePos);
+				$textBefore = substr($text, 0, $this->_stringTreePos);
 			}
 			
-			$textAfter = substr($this->_text, $this->_stringTreePos);
+			$textAfter = substr($text, $this->_stringTreePos);
 		}
 		
 		return array($textBefore, $textAfter);
 	}
+	***/
 
 	protected function _pushOpeningTagSuccess($tagName, &$tagInfo)
 	{
@@ -1591,16 +1690,16 @@ class Sedo_MiniParser
 			}
 
 			/*Merge identical siblings - ie: [b]test[/b] [b]test 2[/b]*/
+			$processSiblings = true;
 			list($prevMerge, $prevIndex, $prevTagId, $blankCatchUp) = $contextIt->prevIsSimilarToRef();
 
 			if(!isset($this->_tagsMapByTagsId[$prevTagId]))
 			{
-				//To do: understand why this pb can happen sometimes
-				//Purpose: do not create a fake map with this line: $this->_tagsMapByTagsId[$prevTagId]['children'][]
-				continue;
+				//Avoid to create a fake map with this line: $this->_tagsMapByTagsId[$prevTagId]['children'][]
+				$processSiblings = false;
 			}
 
-			if($prevMerge && $prevTagId && !$this->stopSiblingsPatch)
+			if($processSiblings && $prevMerge && $prevTagId && !$this->stopSiblingsPatch)
 			{
 				if($blankCatchUp != null)
 				{
@@ -1962,8 +2061,6 @@ class Sedo_MiniParser
 		}
 		
 		$string = htmlspecialchars($string);
-		
-		return $string;
 	}
 
 	public function wrapInHtml($prepend, $append, $text, $option = null)
@@ -2018,6 +2115,10 @@ class Sedo_TinyQuattro_Helper_MiniIterator implements Iterator
 
 				if(!isset($arr['tagId']))
 				{
+					if(is_string($arr))
+					{
+						$this->stringDetectedInTree = true;
+					}
 					continue;
 				}
 				
@@ -2123,6 +2224,23 @@ class Sedo_TinyQuattro_Helper_MiniIterator implements Iterator
 		
 		return false;
 	}
+
+	public function isCurrentBlankStringWithCarriageReturn()
+	{
+		if(!$this->isCurrentBlankString())
+		{
+			return false;
+		}
+
+		$current = $this->current();
+		
+		if(strpos($current, "\n") !== false)
+		{
+			return true;
+		}
+
+		return false;
+	}
 	
 	public function isCurrentTag()
 	{
@@ -2147,7 +2265,7 @@ class Sedo_TinyQuattro_Helper_MiniIterator implements Iterator
 
 	public function prev()
 	{
-		$this->index--;		
+		$this->index--;
 	}
 
 	public function next()
@@ -2165,7 +2283,7 @@ class Sedo_TinyQuattro_Helper_MiniIterator implements Iterator
 			return null;
 		}
 		
-		while(!$this->isCurrentTag && $this->isCurrentBlankString() && $this->isValidIndex())
+		while(!$this->isCurrentTag() && $this->isCurrentBlankString() && $this->isValidIndex())
 		{
 			$this->prev();
 		}
@@ -2185,13 +2303,12 @@ class Sedo_TinyQuattro_Helper_MiniIterator implements Iterator
 
 		$this->next();
 
-		
 		if(!$this->isValidIndex())
 		{
 			return null;
 		}
 		
-		while(!$this->isCurrentTag && $this->isCurrentBlankString() && $this->isValidIndex())
+		while(!$this->isCurrentTag() && $this->isCurrentBlankString() && $this->isValidIndex())
 		{
 			$this->next();
 		}
@@ -2239,6 +2356,53 @@ class Sedo_TinyQuattro_Helper_MiniIterator implements Iterator
 		}
 		
 		while($this->isCurrentBlankString() && $this->isValidIndex())
+		{
+			$this->next();
+		}
+		
+		if(!$this->isValidIndex())
+		{
+			return null;
+		}
+		
+		return $this->current();
+	}
+
+	public function prevString()
+	{
+		$maxIndex = $this->totalTreeEl-1;
+		$this->prev();
+		
+		if(!$this->isValidIndex())
+		{
+			return null;
+		}
+		
+		while($this->isCurrentTag() && $this->isValidIndex())
+		{
+			$this->prev();
+		}
+		
+		if(!$this->isValidIndex())
+		{
+			return null;
+		}
+		
+		return $this->current();
+	}
+
+	public function nextString()
+	{
+		$maxIndex = $this->totalTreeEl-1;
+
+		$this->next();
+		
+		if(!$this->isValidIndex())
+		{
+			return null;
+		}
+		
+		while($this->isCurrentTag() && $this->isValidIndex())
 		{
 			$this->next();
 		}
@@ -2364,6 +2528,7 @@ class Sedo_TinyQuattro_Helper_MiniIterator implements Iterator
 		$blankCatchUp = null;
 		
 		$this->prev();
+
 		if($this->currentIsSimilarToRef())
 		{
 			$prevMerge = true;
@@ -2493,6 +2658,31 @@ class Sedo_TinyQuattro_Helper_MiniIterator implements Iterator
 	public function getParentTagId()
 	{
 		return $this->refParentTagId;
+	}
+	
+	private $stringDetectedInTree = null;
+	public function treeHasString()
+	{
+		if($this->stringDetectedInTree != null)
+		{
+			return $this->stringDetectedInTree;
+		}
+	
+		$this->stringDetectedInTree = false;
+		
+		for($i=0; ; ++$i)
+		{
+			if(!isset($tree[$i])) break;
+			$arr = $tree[$i];
+
+			if(is_string($arr))
+			{
+				$this->stringDetectedInTree = true;
+				break;
+			}
+		}
+
+		return $this->stringDetectedInTree;
 	}
 }
 //Source: http://www.weirdog.com/blog/php/un-parser-html-des-plus-leger.html
